@@ -1,6 +1,6 @@
 use nom::branch::alt;
 use nom::character::complete::none_of;
-use nom::character::complete::{alpha1, digit1};
+use nom::character::complete::{alpha1, digit1, hex_digit1};
 use nom::character::is_digit;
 use nom::combinator::{map, opt, recognize};
 use nom::multi::{many0, many1, many_m_n};
@@ -9,7 +9,7 @@ use nom::bytes::complete::take_while1;
 use nom::character::is_alphabetic;
 use nom::combinator::eof;
 use nom::error::Error;
-use nom::sequence::preceded;
+use nom::sequence::{preceded, terminated};
 use nom::{
     bytes::complete::{tag, take_while_m_n},
     combinator::map_res,
@@ -60,8 +60,15 @@ fn hex_to_i32(input: &str) -> Option<i32> {
 fn read_num(input: &str) -> IResult<&str, Op> {
     map_res::<&str, _, _, _, (), _, _>(
         alt::<&str, _, _, _>((
-            map_res(preceded(tag("0x"), digit1), |x: &str| {
+            map_res(preceded(tag("0x"), hex_digit1), |x: &str| {
                 i32::from_str_radix(&x, 16)
+            }),
+            map_res(terminated(hex_digit1, tag("h")), |x: &str| {
+                i32::from_str_radix(&x, 16)
+            }),
+            // TODO: limit 0 and 1
+            map_res(terminated(digit1, tag("b")), |x: &str| {
+                i32::from_str_radix(&x, 2)
             }),
             map_res(digit1, |x: &str| x.parse::<i32>()),
         )),
@@ -113,27 +120,35 @@ enum Op {
 }
 
 pub use Op::*;
+
 fn cacl1(ops: &Vec<Op>) -> i32 {
     let pars: Vec<Op> = ops
         .clone()
         .into_iter()
         .filter(|x| x == &PL || x == &PR)
         .collect();
-    // dbg!(&pars);
-    // check pars
     if pars.len() % 2 != 0 {
         panic!("bad pars");
     }
-    let pl_idx = ops.clone().into_iter().position(|x| x == PL);
-    if pl_idx.is_some() {
-        let pr_idx = ops.clone()[pl_idx.unwrap()..]
-            .into_iter()
-            .position(|x| x == &PR);
-        dbg!(pl_idx, pr_idx);
-        let exp = &ops.clone()[pl_idx.unwrap() + 1..pr_idx.unwrap()];
-        let mut new_args = vec![Num(cacl1(&Vec::from(exp)))];
-        new_args.extend_from_slice(&ops.clone()[pr_idx.unwrap() + 1..]);
-        return cacl1(&new_args);
+    let mut pl_idx = None;
+    let mut pr_idx = None;
+    for (i, op) in ops.clone().iter().enumerate() {
+        if op == &PL {
+            pl_idx = Some(i);
+        }
+        if op == &PR {
+            if pl_idx.is_none() {
+                panic!("error pr");
+            }
+            pr_idx = Some(i);
+            let exp = &ops.clone()[pl_idx.unwrap() + 1..pr_idx.unwrap()];
+            let mut new_ops = ops.clone();
+            new_ops.splice(
+                pl_idx.unwrap()..=pr_idx.unwrap(),
+                vec![Num(cacl1(&Vec::from(exp)))],
+            );
+            return cacl1(&new_ops);
+        }
     }
     // dbg!(&ops, &ops.len());
     if ops.len() == 3 {
@@ -141,8 +156,9 @@ fn cacl1(ops: &Vec<Op>) -> i32 {
             if let Num(right) = ops[2] {
                 return match ops[1] {
                     Add => left + right,
+                    Minus => left - right,
                     Mul => left * right,
-                    _ => unimplemented!(),
+                    _ => unimplemented!("unknow ops: {:?}", &ops),
                 };
             }
         }
@@ -227,5 +243,19 @@ mod tests {
             ]),
             -4
         );
+
+        assert_eq!(
+            parse_expr("( 0x12- 0x10) *4"),
+            vec![PL, Num(18,), Minus, Num(16,), PR, Mul, Num(4,),]
+        );
+        assert_eq!(calc("( 0x12- 0x10) *4"), 8);
+        assert_eq!(calc("1 + ( 0x12- 0x10) *4"), 9);
+
+        assert_eq!(calc("0xa0+1"), 0xa1);
+
+        assert_eq!(calc("80h+1"), 0x81);
+        assert_eq!(calc("80+1"), 81);
+
+        assert_eq!(calc("1001b"), 9);
     }
 }
